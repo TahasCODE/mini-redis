@@ -2,6 +2,7 @@ package com.example.miniredis.command;
 
 import com.example.miniredis.protocol.RespWriter;
 import com.example.miniredis.store.Store;
+import com.example.miniredis.store.StoreException;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -19,12 +20,15 @@ public final class CommandRouter {
         handlers.put("PING", this::ping);
         handlers.put("ECHO", this::echo);
         handlers.put("COMMAND", this::command);
-        handlers.put("SET", this::set);
         handlers.put("GET", this::get);
         handlers.put("DEL", this::del);
         handlers.put("EXISTS", this::exists);
         handlers.put("DBSIZE", this::dbsize);
         handlers.put("FLUSHALL", this::flushall);
+
+        new StringCommands(store).register(handlers);
+        new CounterCommands(store).register(handlers);
+        new ExpiryCommands(store).register(handlers);
     }
 
 
@@ -41,7 +45,11 @@ public final class CommandRouter {
             out.error("ERR unknown command '" + args.get(0) + "'");
             return true;
         }
-        handler.handle(args, out);
+        try {
+            handler.handle(args, out);
+        } catch (StoreException e) {
+            out.error("ERR " + e.getMessage());
+        }
         return true;
     }
 
@@ -56,7 +64,6 @@ public final class CommandRouter {
         }
     }
 
-
     private void echo(List<String> args, RespWriter out) throws IOException {
         if (args.size() != 2) {
             wrongArgs(args, out);
@@ -65,23 +72,8 @@ public final class CommandRouter {
         out.bulkString(args.get(1));
     }
 
-
     private void command(List<String> args, RespWriter out) throws IOException {
         out.arrayHeader(0);
-    }
-
-
-    private void set(List<String> args, RespWriter out) throws IOException {
-        if (args.size() < 3) {
-            wrongArgs(args, out);
-            return;
-        }
-        if (args.size() > 3) {
-            out.error("ERR syntax error");
-            return;
-        }
-        store.set(args.get(1), args.get(2));
-        out.simpleString("OK");
     }
 
     private void get(List<String> args, RespWriter out) throws IOException {

@@ -10,7 +10,6 @@ import java.util.List;
 
 public final class RespParser {
 
-    /** Redis allows 512 MB; we use a smaller cap so one bad client cannot eat the memory. */
     private static final int MAX_BULK_LENGTH = 64 * 1024 * 1024;
     private static final int MAX_ARRAY_LENGTH = 1_000_000;
 
@@ -20,10 +19,7 @@ public final class RespParser {
         this.in = new BufferedInputStream(rawInput);
     }
 
-    /**
-     * @return the next command as a list of words (the first one is the command name),
-     *         or null when the client closed the connection.
-     */
+
     public List<String> readCommand() throws IOException {
         int first = in.read();
         if (first == -1) {
