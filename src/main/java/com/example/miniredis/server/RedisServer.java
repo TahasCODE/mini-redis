@@ -24,7 +24,6 @@ public final class RedisServer {
         this.port = port;
     }
 
-    /** Blocks until stop() is called. */
     public void start() throws IOException {
         serverSocket = new ServerSocket(port);
         System.out.println("MiniRedis listening on port " + port);
