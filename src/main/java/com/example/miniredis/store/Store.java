@@ -1,7 +1,12 @@
 package com.example.miniredis.store;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+
 
 public final class Store {
 
@@ -30,19 +35,34 @@ public final class Store {
                 return swap(k, old, null);   // XX: key missing, write nothing (and drop a stale expired entry)
             }
             written[0] = true;
-            return swap(k, old, new Entry(value, expiresAt));   // a plain SET also clears any old expiry
+            // a plain SET also clears any old expiry
+            return swap(k, old, new Entry(new StringValue(value), expiresAt));
         });
         return written[0];
     }
 
-    /** @return the value, or null if the key does not exist or has expired. */
+
     public String get(String key) {
         Entry e = live(key, System.currentTimeMillis());
-        return e == null ? null : e.value();
+        if (e == null) {
+            return null;
+        }
+        if (e.value() instanceof StringValue s) {
+            return s.text();
+        }
+        throw wrongType();
     }
 
     public boolean exists(String key) {
         return live(key, System.currentTimeMillis()) != null;
+    }
+
+    public String type(String key) {
+        Entry e = live(key, System.currentTimeMillis());
+        if (e == null) {
+            return "none";
+        }
+        return e.value() instanceof ListValue ? "list" : "string";
     }
 
     public boolean delete(String key) {
@@ -61,7 +81,7 @@ public final class Store {
 
     public void clear() {
         data.clear();
-        index.clear();
+        index.clear();   // an entry that slips in during a clear is harmless: removeExpired double-checks
     }
 
     // ------------------------------------------------------------------ counters
@@ -72,7 +92,13 @@ public final class Store {
         long[] result = new long[1];
         data.compute(key, (k, old) -> {
             boolean exists = old != null && !old.isExpired(now);
-            long current = exists ? parseInteger(old.value()) : 0;
+            long current = 0;
+            if (exists) {
+                if (!(old.value() instanceof StringValue text)) {
+                    throw wrongType();
+                }
+                current = parseInteger(text.text());
+            }
             long expiresAt = exists ? old.expiresAt() : NO_EXPIRY;
             long next;
             try {
@@ -81,7 +107,7 @@ public final class Store {
                 throw new StoreException("increment or decrement would overflow");
             }
             result[0] = next;
-            return swap(k, old, new Entry(Long.toString(next), expiresAt));
+            return swap(k, old, new Entry(new StringValue(Long.toString(next)), expiresAt));
         });
         return result[0];
     }
@@ -95,6 +121,130 @@ public final class Store {
         } catch (NumberFormatException e) {
             throw new StoreException(NOT_INTEGER);
         }
+    }
+
+    // ------------------------------------------------------------------ lists
+
+
+    public long push(String key, List<String> values, boolean atFront) {
+        long now = System.currentTimeMillis();
+        long[] length = new long[1];
+        data.compute(key, (k, old) -> {
+            boolean exists = old != null && !old.isExpired(now);
+            ListValue list;
+            Entry next;
+            if (exists) {
+                if (!(old.value() instanceof ListValue existing)) {
+                    throw wrongType();
+                }
+                list = existing;
+                next = old;
+            } else {
+                list = new ListValue();
+                next = new Entry(list, NO_EXPIRY);
+            }
+            for (String value : values) {
+                if (atFront) {
+                    list.items.addFirst(value);
+                } else {
+                    list.items.addLast(value);
+                }
+            }
+            length[0] = list.items.size();
+            return swap(k, old, next);
+        });
+        return length[0];
+    }
+
+
+    public List<String> pop(String key, long count, boolean fromFront) {
+        long now = System.currentTimeMillis();
+        AtomicReference<List<String>> removed = new AtomicReference<>();
+        data.computeIfPresent(key, (k, old) -> {
+            if (old.isExpired(now)) {
+                return swap(k, old, null);
+            }
+            if (!(old.value() instanceof ListValue list)) {
+                throw wrongType();
+            }
+            List<String> taken = new ArrayList<>();
+            while (taken.size() < count && !list.items.isEmpty()) {
+                taken.add(fromFront ? list.items.pollFirst() : list.items.pollLast());
+            }
+            removed.set(taken);
+            return list.items.isEmpty() ? swap(k, old, null) : old;   // an empty list does not exist in Redis
+        });
+        return removed.get();
+    }
+
+
+    public long listLength(String key) {
+        return readList(key, list -> (long) list.items.size(), 0L);
+    }
+
+
+    public List<String> range(String key, long start, long stop) {
+        return readList(key, list -> {
+            long length = list.items.size();
+            long from = start < 0 ? start + length : start;
+            long to = stop < 0 ? stop + length : stop;
+            if (from < 0) {
+                from = 0;
+            }
+            if (to >= length) {
+                to = length - 1;
+            }
+            List<String> result = new ArrayList<>();
+            if (from > to || from >= length) {
+                return result;
+            }
+            long position = 0;
+            for (String item : list.items) {
+                if (position > to) {
+                    break;
+                }
+                if (position >= from) {
+                    result.add(item);
+                }
+                position++;
+            }
+            return result;
+        }, new ArrayList<>());
+    }
+
+    public String index(String key, long position) {
+        return readList(key, list -> {
+            long length = list.items.size();
+            long wanted = position < 0 ? position + length : position;
+            if (wanted < 0 || wanted >= length) {
+                return null;
+            }
+            long current = 0;
+            for (String item : list.items) {
+                if (current == wanted) {
+                    return item;
+                }
+                current++;
+            }
+            return null;
+        }, null);
+    }
+
+
+    private <T> T readList(String key, Function<ListValue, T> action, T ifMissing) {
+        long now = System.currentTimeMillis();
+        AtomicReference<T> result = new AtomicReference<>(ifMissing);   // just a box the lambda can put the answer in
+        data.computeIfPresent(key, (k, old) -> {
+            if (old.isExpired(now)) {
+                return swap(k, old, null);
+            }
+            if (!(old.value() instanceof ListValue list)) {
+                throw wrongType();
+            }
+            result.set(action.apply(list));
+            return old;
+        });
+        return result.get();
     }
 
     // ------------------------------------------------------------------ expiry
@@ -141,7 +291,6 @@ public final class Store {
         return changed[0];
     }
 
-
     public int removeExpired(int limit) {
         long now = System.currentTimeMillis();
         int[] deleted = {0};
@@ -165,6 +314,10 @@ public final class Store {
 
     // ------------------------------------------------------------------ helpers
 
+    private static StoreException wrongType() {
+        return new StoreException("WRONGTYPE", "Operation against a key holding the wrong kind of value");
+    }
+
     private Entry live(String key, long now) {
         Entry e = data.get(key);
         if (e == null) {
@@ -179,11 +332,12 @@ public final class Store {
     }
 
 
+
     private Entry swap(String key, Entry old, Entry next) {
         long oldAt = old == null ? NO_EXPIRY : old.expiresAt();
         long nextAt = next == null ? NO_EXPIRY : next.expiresAt();
         if (oldAt == nextAt) {
-            return next;
+            return next;                           // same expiry (or none): the index is already right
         }
         if (oldAt != NO_EXPIRY) {
             index.remove(new ExpiryKey(oldAt, key));
