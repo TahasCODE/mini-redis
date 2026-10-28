@@ -18,7 +18,7 @@ public final class ExpirySweeper implements AutoCloseable {
         this.intervalMillis = intervalMillis;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(task -> {
             Thread thread = new Thread(task, "expiry-sweeper");
-            thread.setDaemon(true);   // never keeps the JVM alive on its own
+            thread.setDaemon(true);
             return thread;
         });
     }

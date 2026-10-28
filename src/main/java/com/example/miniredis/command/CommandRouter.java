@@ -25,10 +25,12 @@ public final class CommandRouter {
         handlers.put("EXISTS", this::exists);
         handlers.put("DBSIZE", this::dbsize);
         handlers.put("FLUSHALL", this::flushall);
+        handlers.put("TYPE", this::type);
 
         new StringCommands(store).register(handlers);
         new CounterCommands(store).register(handlers);
         new ExpiryCommands(store).register(handlers);
+        new ListCommands(store).register(handlers);
     }
 
 
@@ -48,7 +50,7 @@ public final class CommandRouter {
         try {
             handler.handle(args, out);
         } catch (StoreException e) {
-            out.error("ERR " + e.getMessage());
+            out.error(e.reply());
         }
         return true;
     }
@@ -123,6 +125,14 @@ public final class CommandRouter {
     private void flushall(List<String> args, RespWriter out) throws IOException {
         store.clear();
         out.simpleString("OK");
+    }
+
+    private void type(List<String> args, RespWriter out) throws IOException {
+        if (args.size() != 2) {
+            wrongArgs(args, out);
+            return;
+        }
+        out.simpleString(store.type(args.get(1)));
     }
 
     private void wrongArgs(List<String> args, RespWriter out) throws IOException {
