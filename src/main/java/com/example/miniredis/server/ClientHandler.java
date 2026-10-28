@@ -38,10 +38,10 @@ public final class ClientHandler implements Runnable {
                     break;
                 }
                 if (command == null) {
-                    break; // client closed the connection
+                    break;
                 }
                 if (command.isEmpty()) {
-                    continue; // empty line, ignore
+                    continue;
                 }
                 boolean keepOpen = router.execute(command, writer);
                 writer.flush();

@@ -53,7 +53,7 @@ public final class RespParser {
             int length = parseNumber(lengthLine, MAX_BULK_LENGTH, "invalid bulk length");
             byte[] data = in.readNBytes(length);
             if (data.length != length) {
-                return null; // client disconnected in the middle of a value
+                return null;
             }
             expectCrLf();
             words.add(new String(data, StandardCharsets.UTF_8));
@@ -76,7 +76,6 @@ public final class RespParser {
         return words;
     }
 
-    /** Reads bytes until CRLF (a lone LF is tolerated for telnet and netcat). */
     private String readLine() throws IOException {
         StringBuilder sb = new StringBuilder();
         int b;

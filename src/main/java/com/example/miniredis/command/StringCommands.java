@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-/** SET (with NX, XX, EX, PX), SETEX and PSETEX. */
 final class StringCommands {
 
     private final Store store;
@@ -23,7 +22,6 @@ final class StringCommands {
         handlers.put("PSETEX", this::psetex);
     }
 
-    // SET key value [NX | XX] [EX seconds | PX milliseconds]
     private void set(List<String> args, RespWriter out) throws IOException {
         if (args.size() < 3) {
             CommandSupport.wrongArgs(args, out);
@@ -32,7 +30,7 @@ final class StringCommands {
 
         Store.SetCondition condition = Store.SetCondition.ALWAYS;
         long expiresAt = Store.NO_EXPIRY;
-        String expiryUnit = null;   // "EX" or "PX" once one of them has been seen
+        String expiryUnit = null;
 
         int i = 3;
         while (i < args.size()) {
@@ -43,7 +41,7 @@ final class StringCommands {
                             ? Store.SetCondition.ONLY_IF_ABSENT
                             : Store.SetCondition.ONLY_IF_PRESENT;
                     if (condition != Store.SetCondition.ALWAYS && condition != wanted) {
-                        CommandSupport.syntaxError(out);   // NX and XX together make no sense
+                        CommandSupport.syntaxError(out);
                         return;
                     }
                     condition = wanted;
@@ -71,7 +69,7 @@ final class StringCommands {
         if (written) {
             out.simpleString("OK");
         } else {
-            out.bulkString(null);   // NX or XX blocked the write: reply null
+            out.bulkString(null);
         }
     }
 

@@ -1,7 +1,7 @@
 package com.example.miniredis.store;
 
 import java.util.concurrent.ConcurrentHashMap;
-
+import java.util.concurrent.ConcurrentSkipListSet;
 
 public final class Store {
 
@@ -12,6 +12,8 @@ public final class Store {
     private static final String NOT_INTEGER = "value is not an integer or out of range";
 
     private final ConcurrentHashMap<String, Entry> data = new ConcurrentHashMap<>();
+
+    private final ConcurrentSkipListSet<ExpiryKey> index = new ConcurrentSkipListSet<>();
 
     // ------------------------------------------------------------------ strings
 
@@ -25,14 +27,15 @@ public final class Store {
                 return old;          // NX: key already there, change nothing
             }
             if (condition == SetCondition.ONLY_IF_PRESENT && !exists) {
-                return null;         // XX: key missing, write nothing (and drop a stale expired entry)
+                return swap(k, old, null);   // XX: key missing, write nothing (and drop a stale expired entry)
             }
             written[0] = true;
-            return new Entry(value, expiresAt);   // a plain SET also clears any old expiry
+            return swap(k, old, new Entry(value, expiresAt));   // a plain SET also clears any old expiry
         });
         return written[0];
     }
 
+    /** @return the value, or null if the key does not exist or has expired. */
     public String get(String key) {
         Entry e = live(key, System.currentTimeMillis());
         return e == null ? null : e.value();
@@ -44,8 +47,12 @@ public final class Store {
 
     public boolean delete(String key) {
         long now = System.currentTimeMillis();
-        Entry removed = data.remove(key);
-        return removed != null && !removed.isExpired(now);
+        boolean[] wasLive = {false};
+        data.compute(key, (k, old) -> {
+            wasLive[0] = old != null && !old.isExpired(now);
+            return swap(k, old, null);
+        });
+        return wasLive[0];
     }
 
     public int size() {
@@ -54,6 +61,7 @@ public final class Store {
 
     public void clear() {
         data.clear();
+        index.clear();
     }
 
     // ------------------------------------------------------------------ counters
@@ -73,7 +81,7 @@ public final class Store {
                 throw new StoreException("increment or decrement would overflow");
             }
             result[0] = next;
-            return new Entry(Long.toString(next), expiresAt);
+            return swap(k, old, new Entry(Long.toString(next), expiresAt));
         });
         return result[0];
     }
@@ -96,14 +104,15 @@ public final class Store {
         boolean[] changed = {false};
         data.computeIfPresent(key, (k, old) -> {
             if (old.isExpired(now)) {
-                return null;
+                return swap(k, old, null);
             }
             changed[0] = true;
-            return new Entry(old.value(), expiresAt);
+            return swap(k, old, new Entry(old.value(), expiresAt));
         });
         return changed[0];
     }
 
+    /** @return -2 if the key does not exist, -1 if it has no expiry, otherwise the milliseconds left. */
     public long ttlMillis(String key) {
         long now = System.currentTimeMillis();
         Entry e = live(key, now);
@@ -121,15 +130,37 @@ public final class Store {
         boolean[] changed = {false};
         data.computeIfPresent(key, (k, old) -> {
             if (old.isExpired(now)) {
-                return null;
+                return swap(k, old, null);
             }
             if (old.expiresAt() == NO_EXPIRY) {
                 return old;
             }
             changed[0] = true;
-            return new Entry(old.value(), NO_EXPIRY);
+            return swap(k, old, new Entry(old.value(), NO_EXPIRY));
         });
         return changed[0];
+    }
+
+
+    public int removeExpired(int limit) {
+        long now = System.currentTimeMillis();
+        int[] deleted = {0};
+        int examined = 0;
+        for (ExpiryKey due : index) {            // ascending order: earliest due time first
+            if (due.expiresAt() > now || examined >= limit) {
+                break;                            // everything after this is later still
+            }
+            examined++;
+            index.remove(due);
+            data.computeIfPresent(due.key(), (k, current) -> {
+                if (current.isExpired(now)) {     // the index line may be stale: always check the real entry
+                    deleted[0]++;
+                    return swap(k, current, null);
+                }
+                return current;
+            });
+        }
+        return deleted[0];
     }
 
     // ------------------------------------------------------------------ helpers
@@ -142,7 +173,24 @@ public final class Store {
         if (!e.isExpired(now)) {
             return e;
         }
-        data.remove(key, e);   // remove only if nobody replaced it in the meantime
+        // remove only if nobody replaced it in the meantime
+        data.computeIfPresent(key, (k, current) -> current == e ? swap(k, current, null) : current);
         return null;
+    }
+
+
+    private Entry swap(String key, Entry old, Entry next) {
+        long oldAt = old == null ? NO_EXPIRY : old.expiresAt();
+        long nextAt = next == null ? NO_EXPIRY : next.expiresAt();
+        if (oldAt == nextAt) {
+            return next;
+        }
+        if (oldAt != NO_EXPIRY) {
+            index.remove(new ExpiryKey(oldAt, key));
+        }
+        if (nextAt != NO_EXPIRY) {
+            index.add(new ExpiryKey(nextAt, key));
+        }
+        return next;
     }
 }

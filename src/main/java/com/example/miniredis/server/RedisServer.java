@@ -1,6 +1,7 @@
 package com.example.miniredis.server;
 
 import com.example.miniredis.command.CommandRouter;
+import com.example.miniredis.store.ExpirySweeper;
 import com.example.miniredis.store.Store;
 
 import java.io.IOException;
@@ -15,6 +16,7 @@ public final class RedisServer {
     private final int port;
     private final Store store = new Store();
     private final CommandRouter router = new CommandRouter(store);
+    private final ExpirySweeper sweeper = new ExpirySweeper(store, 100);   // runs every 100 ms
     private final ExecutorService workers = Executors.newCachedThreadPool();
 
     private volatile boolean running = true;
@@ -26,6 +28,7 @@ public final class RedisServer {
 
     public void start() throws IOException {
         serverSocket = new ServerSocket(port);
+        sweeper.start();
         System.out.println("MiniRedis listening on port " + port);
         while (running) {
             try {
@@ -33,7 +36,7 @@ public final class RedisServer {
                 workers.execute(new ClientHandler(client, router));
             } catch (SocketException e) {
                 if (running) {
-                    throw e; // a real error; if we are stopping, this is expected
+                    throw e;
                 }
             }
         }
@@ -44,6 +47,7 @@ public final class RedisServer {
         if (serverSocket != null) {
             serverSocket.close();
         }
+        sweeper.close();
         workers.shutdownNow();
     }
 }
