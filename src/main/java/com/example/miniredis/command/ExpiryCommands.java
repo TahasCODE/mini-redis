@@ -7,7 +7,6 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
-/** EXPIRE, PEXPIRE, TTL, PTTL, PERSIST. */
 final class ExpiryCommands {
 
     private final Store store;
@@ -24,7 +23,6 @@ final class ExpiryCommands {
         handlers.put("PERSIST", this::persist);
     }
 
-    // EXPIRE key seconds -> 1 if the expiry was set, 0 if the key does not exist
     private void expire(List<String> args, RespWriter out) throws IOException {
         expireWith(args, out, 1000, "expire");
     }
@@ -55,7 +53,7 @@ final class ExpiryCommands {
             return;
         }
         long ms = store.ttlMillis(args.get(1));
-        out.integer(ms < 0 ? ms : (ms + 500) / 1000);   // round to the nearest second
+        out.integer(ms < 0 ? ms : (ms + 500) / 1000);
     }
 
     private void pttl(List<String> args, RespWriter out) throws IOException {

@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
-/** INCR, DECR, INCRBY, DECRBY. */
 final class CounterCommands {
 
     private final Store store;
@@ -60,7 +59,7 @@ final class CounterCommands {
         }
         long delta = Store.parseInteger(args.get(2));
         if (delta == Long.MIN_VALUE) {
-            throw new StoreException("decrement would overflow");   // -MIN_VALUE does not fit in a long
+            throw new StoreException("decrement would overflow");
         }
         out.integer(store.increment(args.get(1), -delta));
     }
