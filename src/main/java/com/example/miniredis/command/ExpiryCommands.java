@@ -43,8 +43,7 @@ final class ExpiryCommands {
             out.integer(store.delete(key) ? 1 : 0);
             return;
         }
-        long expiresAt = CommandSupport.toExpiresAt(amount, millisPerUnit, name);
-        out.integer(store.setExpiry(key, expiresAt) ? 1 : 0);
+        long expiresAt = CommandSupport.toExpiresAt(store.now(), amount, millisPerUnit, name);        out.integer(store.setExpiry(key, expiresAt) ? 1 : 0);
     }
 
     private void ttl(List<String> args, RespWriter out) throws IOException {

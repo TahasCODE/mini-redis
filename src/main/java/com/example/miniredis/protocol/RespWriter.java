@@ -10,6 +10,7 @@ public final class RespWriter {
     private static final byte[] CRLF = {'\r', '\n'};
 
     private final OutputStream out;
+    private boolean errorWritten;
 
     public RespWriter(OutputStream rawOutput) {
         this.out = new BufferedOutputStream(rawOutput);
@@ -20,6 +21,7 @@ public final class RespWriter {
     }
 
     public void error(String message) throws IOException {
+        errorWritten = true;
         writeLine('-' + message);
     }
 
@@ -40,6 +42,15 @@ public final class RespWriter {
 
     public void arrayHeader(int size) throws IOException {
         writeLine("*" + size);
+    }
+
+
+    public boolean errorWritten() {
+        return errorWritten;
+    }
+
+    public void clearErrorFlag() {
+        errorWritten = false;
     }
 
     public void flush() throws IOException {

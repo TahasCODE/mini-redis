@@ -21,12 +21,12 @@ final class CommandSupport {
     }
 
 
-    static long toExpiresAt(long amount, long millisPerUnit, String commandName) {
+    static long toExpiresAt(long now,long amount, long millisPerUnit, String commandName) {
         if (amount <= 0) {
             throw new StoreException("invalid expire time in '" + commandName + "' command");
         }
         try {
-            return Math.addExact(System.currentTimeMillis(), Math.multiplyExact(amount, millisPerUnit));
+            return Math.addExact(now, Math.multiplyExact(amount, millisPerUnit));
         } catch (ArithmeticException e) {
             throw new StoreException("invalid expire time in '" + commandName + "' command");
         }
