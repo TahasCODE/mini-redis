@@ -31,6 +31,8 @@ public final class CommandRouter {
         new CounterCommands(store).register(handlers);
         new ExpiryCommands(store).register(handlers);
         new ListCommands(store).register(handlers);
+        new HashCommands(store).register(handlers);
+        new KeyCommands(store).register(handlers);
     }
 
 
