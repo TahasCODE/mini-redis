@@ -14,14 +14,33 @@ public final class RespParser {
     private static final int MAX_ARRAY_LENGTH = 1_000_000;
 
     private final InputStream in;
+    private long consumed;   // how many bytes have been read so far (the append-only file loader needs this)
 
     public RespParser(InputStream rawInput) {
         this.in = new BufferedInputStream(rawInput);
     }
 
+    public long position() {
+        return consumed;
+    }
+
+    private int nextByte() throws IOException {
+        int b = in.read();
+        if (b != -1) {
+            consumed++;
+        }
+        return b;
+    }
+
+    private byte[] nextBytes(int length) throws IOException {
+        byte[] data = in.readNBytes(length);
+        consumed += data.length;
+        return data;
+    }
+
 
     public List<String> readCommand() throws IOException {
-        int first = in.read();
+        int first = nextByte();
         if (first == -1) {
             return null;
         }
@@ -39,7 +58,7 @@ public final class RespParser {
         int count = parseNumber(countLine, MAX_ARRAY_LENGTH, "invalid multibulk length");
         List<String> words = new ArrayList<>();
         for (int i = 0; i < count; i++) {
-            int type = in.read();
+            int type = nextByte();
             if (type == -1) {
                 return null;
             }
@@ -51,9 +70,9 @@ public final class RespParser {
                 return null;
             }
             int length = parseNumber(lengthLine, MAX_BULK_LENGTH, "invalid bulk length");
-            byte[] data = in.readNBytes(length);
+            byte[] data = nextBytes(length);
             if (data.length != length) {
-                return null;
+                return null; // client disconnected in the middle of a value
             }
             expectCrLf();
             words.add(new String(data, StandardCharsets.UTF_8));
@@ -79,9 +98,9 @@ public final class RespParser {
     private String readLine() throws IOException {
         StringBuilder sb = new StringBuilder();
         int b;
-        while ((b = in.read()) != -1) {
+        while ((b = nextByte()) != -1) {
             if (b == '\r') {
-                int next = in.read();
+                int next = nextByte();
                 if (next != '\n') {
                     throw new ProtocolException("expected LF after CR");
                 }
@@ -96,8 +115,8 @@ public final class RespParser {
     }
 
     private void expectCrLf() throws IOException {
-        int cr = in.read();
-        int lf = in.read();
+        int cr = nextByte();
+        int lf = nextByte();
         if (cr != '\r' || lf != '\n') {
             throw new ProtocolException("expected CRLF after bulk string");
         }

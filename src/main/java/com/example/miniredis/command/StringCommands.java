@@ -30,7 +30,7 @@ final class StringCommands {
 
         Store.SetCondition condition = Store.SetCondition.ALWAYS;
         long expiresAt = Store.NO_EXPIRY;
-        String expiryUnit = null;
+        String expiryUnit = null;   // "EX" or "PX" once one of them has been seen
 
         int i = 3;
         while (i < args.size()) {
@@ -41,7 +41,7 @@ final class StringCommands {
                             ? Store.SetCondition.ONLY_IF_ABSENT
                             : Store.SetCondition.ONLY_IF_PRESENT;
                     if (condition != Store.SetCondition.ALWAYS && condition != wanted) {
-                        CommandSupport.syntaxError(out);
+                        CommandSupport.syntaxError(out);   // NX and XX together make no sense
                         return;
                     }
                     condition = wanted;
@@ -54,7 +54,7 @@ final class StringCommands {
                     }
                     long amount = Store.parseInteger(args.get(i + 1));
                     long millisPerUnit = option.equals("EX") ? 1000 : 1;
-                    expiresAt = CommandSupport.toExpiresAt(amount, millisPerUnit, "set");
+                    expiresAt = CommandSupport.toExpiresAt(store.now(), amount, millisPerUnit, "set");
                     expiryUnit = option;
                     i += 2;
                 }
@@ -69,16 +69,14 @@ final class StringCommands {
         if (written) {
             out.simpleString("OK");
         } else {
-            out.bulkString(null);
+            out.bulkString(null);   // NX or XX blocked the write: reply null
         }
     }
 
-    // SETEX key seconds value
     private void setex(List<String> args, RespWriter out) throws IOException {
         setWithTtl(args, out, 1000, "setex");
     }
 
-    // PSETEX key milliseconds value
     private void psetex(List<String> args, RespWriter out) throws IOException {
         setWithTtl(args, out, 1, "psetex");
     }
@@ -89,7 +87,7 @@ final class StringCommands {
             return;
         }
         long amount = Store.parseInteger(args.get(2));
-        long expiresAt = CommandSupport.toExpiresAt(amount, millisPerUnit, name);
+        long expiresAt = CommandSupport.toExpiresAt(store.now(), amount, millisPerUnit, name);
         store.set(args.get(1), args.get(3), expiresAt, Store.SetCondition.ALWAYS);
         out.simpleString("OK");
     }

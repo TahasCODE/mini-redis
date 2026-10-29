@@ -1,5 +1,6 @@
 package com.example.miniredis.command;
 
+import com.example.miniredis.persistence.AppendOnlyFile;
 import com.example.miniredis.protocol.RespWriter;
 import com.example.miniredis.store.Store;
 import com.example.miniredis.store.StoreException;
@@ -9,11 +10,19 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public final class CommandRouter {
 
     private final Store store;
     private final Map<String, CommandHandler> handlers = new HashMap<>();
+
+    private static final Set<String> WRITE_COMMANDS = Set.of(
+            "SET", "SETEX", "PSETEX", "DEL", "FLUSHALL", "INCR", "DECR", "INCRBY", "DECRBY",
+            "EXPIRE", "PEXPIRE", "PERSIST", "LPUSH", "RPUSH", "LPOP", "RPOP", "LTRIM",
+            "HSET", "HDEL", "HINCRBY");
+
+    private volatile AppendOnlyFile appendOnlyFile;
 
     public CommandRouter(Store store) {
         this.store = store;
@@ -35,6 +44,10 @@ public final class CommandRouter {
         new KeyCommands(store).register(handlers);
     }
 
+    public void enableAppendOnly(AppendOnlyFile file) {
+        this.appendOnlyFile = file;
+    }
+
 
     public boolean execute(List<String> args, RespWriter out) throws IOException {
         String name = args.get(0).toUpperCase(Locale.ROOT);
@@ -50,11 +63,29 @@ public final class CommandRouter {
             return true;
         }
         try {
-            handler.handle(args, out);
+            AppendOnlyFile log = appendOnlyFile;
+            if (log != null && WRITE_COMMANDS.contains(name)) {
+                runAndLog(handler, args, out, log);
+            } else {
+                handler.handle(args, out);
+            }
         } catch (StoreException e) {
             out.error(e.reply());
         }
         return true;
+    }
+
+
+    private void runAndLog(CommandHandler handler, List<String> args, RespWriter out, AppendOnlyFile log)
+            throws IOException {
+        synchronized (log) {
+            long startedAt = store.now();
+            out.clearErrorFlag();
+            handler.handle(args, out);           // a StoreException flies out of here and nothing is logged
+            if (!out.errorWritten()) {           // wrong arguments and syntax errors are replies, not exceptions
+                log.append(startedAt, args);
+            }
+        }
     }
 
 

@@ -21,13 +21,31 @@ public final class Store {
 
     private final ConcurrentHashMap<String, Entry> data = new ConcurrentHashMap<>();
 
+
+    private volatile long clockOverride = -1;
+
     private final ConcurrentSkipListSet<ExpiryKey> index = new ConcurrentSkipListSet<>();
+
+    // ------------------------------------------------------------------ the clock
+
+    public long now() {
+        long fixed = clockOverride;
+        return fixed >= 0 ? fixed : System.currentTimeMillis();
+    }
+
+    public void setClock(long millis) {
+        clockOverride = millis;
+    }
+
+    public void useRealClock() {
+        clockOverride = -1;
+    }
 
     // ------------------------------------------------------------------ strings
 
 
     public boolean set(String key, String value, long expiresAt, SetCondition condition) {
-        long now = System.currentTimeMillis();
+        long now = now();
         boolean[] written = {false};
         data.compute(key, (k, old) -> {
             boolean exists = old != null && !old.isExpired(now);
@@ -44,9 +62,8 @@ public final class Store {
         return written[0];
     }
 
-
     public String get(String key) {
-        Entry e = live(key, System.currentTimeMillis());
+        Entry e = live(key, now());
         if (e == null) {
             return null;
         }
@@ -57,11 +74,11 @@ public final class Store {
     }
 
     public boolean exists(String key) {
-        return live(key, System.currentTimeMillis()) != null;
+        return live(key, now()) != null;
     }
 
     public String type(String key) {
-        Entry e = live(key, System.currentTimeMillis());
+        Entry e = live(key, now());
         if (e == null) {
             return "none";
         }
@@ -72,8 +89,9 @@ public final class Store {
         };
     }
 
+    /** Deletes a key of any type. @return true if a live key was removed. */
     public boolean delete(String key) {
-        long now = System.currentTimeMillis();
+        long now = now();
         boolean[] wasLive = {false};
         data.compute(key, (k, old) -> {
             wasLive[0] = old != null && !old.isExpired(now);
@@ -95,7 +113,7 @@ public final class Store {
 
 
     public long increment(String key, long delta) {
-        long now = System.currentTimeMillis();
+        long now = now();
         long[] result = new long[1];
         data.compute(key, (k, old) -> {
             boolean exists = old != null && !old.isExpired(now);
@@ -134,7 +152,7 @@ public final class Store {
 
 
     public long push(String key, List<String> values, boolean atFront) {
-        long now = System.currentTimeMillis();
+        long now = now();
         long[] length = new long[1];
         data.compute(key, (k, old) -> {
             boolean exists = old != null && !old.isExpired(now);
@@ -165,7 +183,7 @@ public final class Store {
 
 
     public List<String> pop(String key, long count, boolean fromFront) {
-        long now = System.currentTimeMillis();
+        long now = now();
         AtomicReference<List<String>> removed = new AtomicReference<>();
         data.computeIfPresent(key, (k, old) -> {
             if (old.isExpired(now)) {
@@ -233,7 +251,7 @@ public final class Store {
 
 
     public void trim(String key, long start, long stop) {
-        long now = System.currentTimeMillis();
+        long now = now();
         data.computeIfPresent(key, (k, old) -> {
             if (old.isExpired(now)) {
                 return swap(k, old, null);
@@ -255,6 +273,7 @@ public final class Store {
             return old;
         });
     }
+
 
     private static long[] bounds(long length, long start, long stop) {
         long from = start < 0 ? start + length : start;
@@ -281,7 +300,7 @@ public final class Store {
     }
 
     private <V extends Value, T> T readValue(String key, Class<V> wanted, Function<V, T> action, T ifMissing) {
-        long now = System.currentTimeMillis();
+        long now = now();
         AtomicReference<T> result = new AtomicReference<>(ifMissing);   // a box the lambda puts the answer in
         data.computeIfPresent(key, (k, old) -> {
             if (old.isExpired(now)) {
@@ -300,7 +319,7 @@ public final class Store {
 
 
     public long hashSet(String key, List<String> pairs) {
-        long now = System.currentTimeMillis();
+        long now = now();
         long[] added = new long[1];
         data.compute(key, (k, old) -> {
             boolean exists = old != null && !old.isExpired(now);
@@ -339,7 +358,7 @@ public final class Store {
     }
 
     public long hashDelete(String key, List<String> fields) {
-        long now = System.currentTimeMillis();
+        long now = now();
         long[] removed = new long[1];
         data.computeIfPresent(key, (k, old) -> {
             if (old.isExpired(now)) {
@@ -359,7 +378,7 @@ public final class Store {
     }
 
     public long hashIncrement(String key, String field, long delta) {
-        long now = System.currentTimeMillis();
+        long now = now();
         long[] result = new long[1];
         data.compute(key, (k, old) -> {
             boolean exists = old != null && !old.isExpired(now);
@@ -406,7 +425,7 @@ public final class Store {
     }
 
     public List<String> keys(String pattern) {
-        long now = System.currentTimeMillis();
+        long now = now();
         List<String> found = new ArrayList<>();
         for (Map.Entry<String, Entry> item : data.entrySet()) {     // safe to walk while others change the map
             if (!item.getValue().isExpired(now) && GlobMatcher.matches(pattern, item.getKey())) {
@@ -416,8 +435,9 @@ public final class Store {
         return found;
     }
 
+
     public ScanResult scan(long cursor, int count, String pattern) {
-        long now = System.currentTimeMillis();
+        long now = now();
         List<Candidate> candidates = new ArrayList<>();
         for (Map.Entry<String, Entry> item : data.entrySet()) {
             long hash = item.getKey().hashCode() & 0xFFFFFFFFL;     // the key's fixed place, 0 .. 2^32-1
@@ -443,7 +463,7 @@ public final class Store {
     // ------------------------------------------------------------------ expiry
 
     public boolean setExpiry(String key, long expiresAt) {
-        long now = System.currentTimeMillis();
+        long now = now();
         boolean[] changed = {false};
         data.computeIfPresent(key, (k, old) -> {
             if (old.isExpired(now)) {
@@ -456,7 +476,7 @@ public final class Store {
     }
 
     public long ttlMillis(String key) {
-        long now = System.currentTimeMillis();
+        long now = now();
         Entry e = live(key, now);
         if (e == null) {
             return -2;
@@ -468,7 +488,7 @@ public final class Store {
     }
 
     public boolean persist(String key) {
-        long now = System.currentTimeMillis();
+        long now = now();
         boolean[] changed = {false};
         data.computeIfPresent(key, (k, old) -> {
             if (old.isExpired(now)) {
@@ -485,7 +505,7 @@ public final class Store {
 
 
     public int removeExpired(int limit) {
-        long now = System.currentTimeMillis();
+        long now = now();
         int[] deleted = {0};
         int examined = 0;
         for (ExpiryKey due : index) {            // ascending order: earliest due time first

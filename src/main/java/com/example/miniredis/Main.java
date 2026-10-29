@@ -3,6 +3,7 @@ package com.example.miniredis;
 import com.example.miniredis.server.RedisServer;
 
 import java.io.IOException;
+import java.nio.file.Path;
 
 public final class Main {
 
@@ -10,7 +11,17 @@ public final class Main {
 
     public static void main(String[] args) throws IOException {
         int port = args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_PORT;
-        RedisServer server = new RedisServer(port);
+        // second argument: where the append-only file lives; "none" switches it off
+        String aofName = args.length > 1 ? args[1] : "appendonly.aof";
+        Path aofPath = aofName.equals("none") ? null : Path.of(aofName);
+        RedisServer server;
+        try {
+            server = new RedisServer(port, aofPath);
+        } catch (IOException e) {
+            System.err.println("MiniRedis cannot start: " + e.getMessage());
+            System.exit(1);
+            return;
+        }
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
