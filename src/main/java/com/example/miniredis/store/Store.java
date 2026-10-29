@@ -1,7 +1,10 @@
 package com.example.miniredis.store;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.atomic.AtomicReference;
@@ -62,7 +65,11 @@ public final class Store {
         if (e == null) {
             return "none";
         }
-        return e.value() instanceof ListValue ? "list" : "string";
+        return switch (e.value()) {
+            case StringValue s -> "string";
+            case ListValue l -> "list";
+            case HashValue h -> "hash";
+        };
     }
 
     public boolean delete(String key) {
@@ -185,19 +192,13 @@ public final class Store {
 
     public List<String> range(String key, long start, long stop) {
         return readList(key, list -> {
-            long length = list.items.size();
-            long from = start < 0 ? start + length : start;
-            long to = stop < 0 ? stop + length : stop;
-            if (from < 0) {
-                from = 0;
-            }
-            if (to >= length) {
-                to = length - 1;
-            }
+            long[] bounds = bounds(list.items.size(), start, stop);
             List<String> result = new ArrayList<>();
-            if (from > to || from >= length) {
+            if (bounds == null) {
                 return result;
             }
+            long from = bounds[0];
+            long to = bounds[1];
             long position = 0;
             for (String item : list.items) {
                 if (position > to) {
@@ -231,9 +232,8 @@ public final class Store {
     }
 
 
-    private <T> T readList(String key, Function<ListValue, T> action, T ifMissing) {
+    public void trim(String key, long start, long stop) {
         long now = System.currentTimeMillis();
-        AtomicReference<T> result = new AtomicReference<>(ifMissing);   // just a box the lambda can put the answer in
         data.computeIfPresent(key, (k, old) -> {
             if (old.isExpired(now)) {
                 return swap(k, old, null);
@@ -241,10 +241,203 @@ public final class Store {
             if (!(old.value() instanceof ListValue list)) {
                 throw wrongType();
             }
-            result.set(action.apply(list));
+            long length = list.items.size();
+            long[] bounds = bounds(length, start, stop);
+            if (bounds == null) {
+                return swap(k, old, null);            // nothing survives: an empty list does not exist
+            }
+            for (long i = 0; i < bounds[0]; i++) {
+                list.items.pollFirst();
+            }
+            for (long i = bounds[1] + 1; i < length; i++) {
+                list.items.pollLast();
+            }
+            return old;
+        });
+    }
+
+    private static long[] bounds(long length, long start, long stop) {
+        long from = start < 0 ? start + length : start;
+        long to = stop < 0 ? stop + length : stop;
+        if (from < 0) {
+            from = 0;
+        }
+        if (to >= length) {
+            to = length - 1;
+        }
+        if (from > to || from >= length) {
+            return null;
+        }
+        return new long[] {from, to};
+    }
+
+
+    private <T> T readList(String key, Function<ListValue, T> action, T ifMissing) {
+        return readValue(key, ListValue.class, action, ifMissing);
+    }
+
+    private <T> T readHash(String key, Function<HashValue, T> action, T ifMissing) {
+        return readValue(key, HashValue.class, action, ifMissing);
+    }
+
+    private <V extends Value, T> T readValue(String key, Class<V> wanted, Function<V, T> action, T ifMissing) {
+        long now = System.currentTimeMillis();
+        AtomicReference<T> result = new AtomicReference<>(ifMissing);   // a box the lambda puts the answer in
+        data.computeIfPresent(key, (k, old) -> {
+            if (old.isExpired(now)) {
+                return swap(k, old, null);
+            }
+            if (!wanted.isInstance(old.value())) {
+                throw wrongType();
+            }
+            result.set(action.apply(wanted.cast(old.value())));
             return old;
         });
         return result.get();
+    }
+
+    // ------------------------------------------------------------------ hashes
+
+
+    public long hashSet(String key, List<String> pairs) {
+        long now = System.currentTimeMillis();
+        long[] added = new long[1];
+        data.compute(key, (k, old) -> {
+            boolean exists = old != null && !old.isExpired(now);
+            HashValue hash;
+            Entry next;
+            if (exists) {
+                if (!(old.value() instanceof HashValue existing)) {
+                    throw wrongType();
+                }
+                hash = existing;
+                next = old;
+            } else {
+                hash = new HashValue();
+                next = new Entry(hash, NO_EXPIRY);
+            }
+            for (int i = 0; i < pairs.size(); i += 2) {
+                if (hash.fields.put(pairs.get(i), pairs.get(i + 1)) == null) {
+                    added[0]++;
+                }
+            }
+            return swap(k, old, next);
+        });
+        return added[0];
+    }
+
+    public String hashGet(String key, String field) {
+        return readHash(key, hash -> hash.fields.get(field), null);
+    }
+
+    public Map<String, String> hashGetAll(String key) {
+        return readHash(key, hash -> new LinkedHashMap<>(hash.fields), new LinkedHashMap<>());
+    }
+
+    public long hashLength(String key) {
+        return readHash(key, hash -> (long) hash.fields.size(), 0L);
+    }
+
+    public long hashDelete(String key, List<String> fields) {
+        long now = System.currentTimeMillis();
+        long[] removed = new long[1];
+        data.computeIfPresent(key, (k, old) -> {
+            if (old.isExpired(now)) {
+                return swap(k, old, null);
+            }
+            if (!(old.value() instanceof HashValue hash)) {
+                throw wrongType();
+            }
+            for (String field : fields) {
+                if (hash.fields.remove(field) != null) {
+                    removed[0]++;
+                }
+            }
+            return hash.fields.isEmpty() ? swap(k, old, null) : old;
+        });
+        return removed[0];
+    }
+
+    public long hashIncrement(String key, String field, long delta) {
+        long now = System.currentTimeMillis();
+        long[] result = new long[1];
+        data.compute(key, (k, old) -> {
+            boolean exists = old != null && !old.isExpired(now);
+            HashValue hash;
+            Entry next;
+            if (exists) {
+                if (!(old.value() instanceof HashValue existing)) {
+                    throw wrongType();
+                }
+                hash = existing;
+                next = old;
+            } else {
+                hash = new HashValue();
+                next = new Entry(hash, NO_EXPIRY);
+            }
+            long current = 0;
+            String text = hash.fields.get(field);
+            if (text != null) {
+                try {
+                    current = parseInteger(text);
+                } catch (StoreException e) {
+                    throw new StoreException("hash value is not an integer");
+                }
+            }
+            long sum;
+            try {
+                sum = Math.addExact(current, delta);
+            } catch (ArithmeticException e) {
+                throw new StoreException("increment or decrement would overflow");
+            }
+            hash.fields.put(field, Long.toString(sum));    // only reached when nothing failed
+            result[0] = sum;
+            return swap(k, old, next);
+        });
+        return result[0];
+    }
+
+    // ------------------------------------------------------------------ looking at keys
+
+    public record ScanResult(long nextCursor, List<String> keys) {
+    }
+
+    private record Candidate(long hash, String key, boolean live) {
+    }
+
+    public List<String> keys(String pattern) {
+        long now = System.currentTimeMillis();
+        List<String> found = new ArrayList<>();
+        for (Map.Entry<String, Entry> item : data.entrySet()) {     // safe to walk while others change the map
+            if (!item.getValue().isExpired(now) && GlobMatcher.matches(pattern, item.getKey())) {
+                found.add(item.getKey());
+            }
+        }
+        return found;
+    }
+
+    public ScanResult scan(long cursor, int count, String pattern) {
+        long now = System.currentTimeMillis();
+        List<Candidate> candidates = new ArrayList<>();
+        for (Map.Entry<String, Entry> item : data.entrySet()) {
+            long hash = item.getKey().hashCode() & 0xFFFFFFFFL;     // the key's fixed place, 0 .. 2^32-1
+            if (hash >= cursor) {
+                candidates.add(new Candidate(hash, item.getKey(), !item.getValue().isExpired(now)));
+            }
+        }
+        candidates.sort(Comparator.comparingLong(Candidate::hash).thenComparing(Candidate::key));
+        int end = Math.min(count, candidates.size());
+        while (end < candidates.size() && end > 0 && candidates.get(end).hash() == candidates.get(end - 1).hash()) {
+            end++;                                                   // finish the group of equal numbers
+        }
+        List<String> page = new ArrayList<>();
+        for (Candidate c : candidates.subList(0, end)) {
+            if (c.live() && (pattern == null || GlobMatcher.matches(pattern, c.key()))) {
+                page.add(c.key());
+            }
+        }
+        long next = end < candidates.size() ? candidates.get(end).hash() : 0;
+        return new ScanResult(next, page);
     }
 
     // ------------------------------------------------------------------ expiry
@@ -262,7 +455,6 @@ public final class Store {
         return changed[0];
     }
 
-    /** @return -2 if the key does not exist, -1 if it has no expiry, otherwise the milliseconds left. */
     public long ttlMillis(String key) {
         long now = System.currentTimeMillis();
         Entry e = live(key, now);
@@ -290,6 +482,7 @@ public final class Store {
         });
         return changed[0];
     }
+
 
     public int removeExpired(int limit) {
         long now = System.currentTimeMillis();
@@ -330,7 +523,6 @@ public final class Store {
         data.computeIfPresent(key, (k, current) -> current == e ? swap(k, current, null) : current);
         return null;
     }
-
 
 
     private Entry swap(String key, Entry old, Entry next) {

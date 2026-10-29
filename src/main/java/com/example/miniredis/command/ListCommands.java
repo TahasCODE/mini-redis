@@ -24,6 +24,7 @@ final class ListCommands {
         handlers.put("LLEN", this::llen);
         handlers.put("LRANGE", this::lrange);
         handlers.put("LINDEX", this::lindex);
+        handlers.put("LTRIM", this::ltrim);
     }
 
     private void push(List<String> args, RespWriter out, boolean atFront) throws IOException {
@@ -92,6 +93,17 @@ final class ListCommands {
         }
         long index = Store.parseInteger(args.get(2));
         out.bulkString(store.index(args.get(1), index));
+    }
+
+    private void ltrim(List<String> args, RespWriter out) throws IOException {
+        if (args.size() != 4) {
+            CommandSupport.wrongArgs(args, out);
+            return;
+        }
+        long start = Store.parseInteger(args.get(2));
+        long stop = Store.parseInteger(args.get(3));
+        store.trim(args.get(1), start, stop);
+        out.simpleString("OK");
     }
 
     private static void writeList(RespWriter out, List<String> items) throws IOException {
