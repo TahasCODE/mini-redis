@@ -35,6 +35,7 @@ public final class CommandRouter {
         handlers.put("DBSIZE", this::dbsize);
         handlers.put("FLUSHALL", this::flushall);
         handlers.put("TYPE", this::type);
+        handlers.put("BGREWRITEAOF", this::rewriteAof);
 
         new StringCommands(store).register(handlers);
         new CounterCommands(store).register(handlers);
@@ -84,8 +85,44 @@ public final class CommandRouter {
             handler.handle(args, out);           // a StoreException flies out of here and nothing is logged
             if (!out.errorWritten()) {           // wrong arguments and syntax errors are replies, not exceptions
                 log.append(startedAt, args);
+                if (log.shouldRewrite()) {       // the file has grown a lot: shrink it (still under the lock)
+                    rewriteNow(log);
+                }
             }
         }
+    }
+
+    private void rewriteNow(AppendOnlyFile log) {
+        try {
+            AppendOnlyFile.RewriteResult r = log.rewrite(store);
+            System.out.println("append-only file rewritten: " + r.bytesBefore() + " -> " + r.bytesAfter() + " bytes, "
+                    + r.keys() + " keys, " + r.commands() + " commands, " + r.millis() + " ms");
+        } catch (IOException | RuntimeException e) {
+            System.out.println("append-only file rewrite failed (the old file is still in use): " + e);
+        }
+    }
+
+    private void rewriteAof(List<String> args, RespWriter out) throws IOException {
+        if (args.size() != 1) {
+            wrongArgs(args, out);
+            return;
+        }
+        AppendOnlyFile log = appendOnlyFile;
+        if (log == null) {
+            out.error("ERR the append-only file is not enabled");
+            return;
+        }
+        synchronized (log) {
+            try {
+                AppendOnlyFile.RewriteResult r = log.rewrite(store);
+                System.out.println("append-only file rewritten: " + r.bytesBefore() + " -> " + r.bytesAfter()
+                        + " bytes, " + r.keys() + " keys, " + r.commands() + " commands, " + r.millis() + " ms");
+            } catch (IOException e) {
+                out.error("ERR rewrite failed, the old file is still in use: " + e.getMessage());
+                return;
+            }
+        }
+        out.simpleString("Background append only file rewriting started");
     }
 
 

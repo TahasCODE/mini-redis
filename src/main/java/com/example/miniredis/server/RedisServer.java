@@ -26,7 +26,8 @@ public final class RedisServer {
     private ServerSocket serverSocket;
     private AppendOnlyFile appendOnlyFile;
 
-    public RedisServer(int port, Path aofPath) throws IOException {
+    public RedisServer(int port, Path aofPath, AppendOnlyFile.FsyncPolicy policy, long autoRewriteMinBytes)
+            throws IOException {
         this.port = port;
         if (aofPath != null) {
             long started = System.nanoTime();
@@ -34,8 +35,9 @@ public final class RedisServer {
             System.out.println("append-only file " + aofPath.toAbsolutePath() + ": replayed " + replayed
                     + " commands in " + (System.nanoTime() - started) / 1_000_000 + " ms, "
                     + store.size() + " keys");
-            appendOnlyFile = AppendOnlyFile.open(aofPath);
-            router.enableAppendOnly(appendOnlyFile);
+            appendOnlyFile = AppendOnlyFile.open(aofPath, policy, autoRewriteMinBytes);
+            System.out.println("append-only file fsync policy: " + policy.name().toLowerCase()
+                    + ", automatic rewrite: " + (autoRewriteMinBytes > 0 ? "from " + autoRewriteMinBytes + " bytes" : "off"));            router.enableAppendOnly(appendOnlyFile);
         }
     }
 

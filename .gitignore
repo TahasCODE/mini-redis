@@ -45,3 +45,5 @@ diff before3.txt after3.txt && echo "SAME AFTER RESTART"
 redis-cli -p 6399 shutdown nosave*.log
 dump.aof
 appendonly.aof
+*.aof
+*.rewrite.tmp
