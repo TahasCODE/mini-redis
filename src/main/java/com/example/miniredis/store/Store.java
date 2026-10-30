@@ -26,6 +26,63 @@ public final class Store {
 
     private final ConcurrentSkipListSet<ExpiryKey> index = new ConcurrentSkipListSet<>();
 
+    // ------------------------------------------------------------------ rewriting the append-only file
+
+    public List<List<String>> rebuildCommands(String key, long now) {
+        List<List<String>> commands = new ArrayList<>();
+        data.computeIfPresent(key, (k, entry) -> {
+            if (entry.isExpired(now)) {
+                return entry;                       // nothing to write; the sweeper will remove it
+            }
+            long left = entry.expiresAt() - now;    // only used if the key has an expiry
+            boolean hasExpiry = entry.expiresAt() != NO_EXPIRY;
+            switch (entry.value()) {
+                case StringValue text -> {
+                    List<String> set = new ArrayList<>(List.of("SET", k, text.text()));
+                    if (hasExpiry) {
+                        set.add("PX");
+                        set.add(Long.toString(left));
+                    }
+                    commands.add(set);
+                }
+                case ListValue list -> {
+                    List<String> chunk = new ArrayList<>(List.of("RPUSH", k));
+                    for (String item : list.items) {
+                        chunk.add(item);
+                        if (chunk.size() == 2 + REBUILD_CHUNK) {
+                            commands.add(chunk);
+                            chunk = new ArrayList<>(List.of("RPUSH", k));
+                        }
+                    }
+                    if (chunk.size() > 2) {
+                        commands.add(chunk);
+                    }
+                }
+                case HashValue hash -> {
+                    List<String> chunk = new ArrayList<>(List.of("HSET", k));
+                    for (Map.Entry<String, String> field : hash.fields.entrySet()) {
+                        chunk.add(field.getKey());
+                        chunk.add(field.getValue());
+                        if (chunk.size() == 2 + 2 * REBUILD_CHUNK) {
+                            commands.add(chunk);
+                            chunk = new ArrayList<>(List.of("HSET", k));
+                        }
+                    }
+                    if (chunk.size() > 2) {
+                        commands.add(chunk);
+                    }
+                }
+            }
+            if (hasExpiry && !(entry.value() instanceof StringValue)) {
+                commands.add(List.of("PEXPIRE", k, Long.toString(left)));   // strings carry it in SET ... PX
+            }
+            return entry;
+        });
+        return commands;
+    }
+
+    private static final int REBUILD_CHUNK = 100;
+
     // ------------------------------------------------------------------ the clock
 
     public long now() {
