@@ -1,5 +1,5 @@
 package com.example.miniredis.server;
-
+import com.example.miniredis.command.ClientSession;
 import com.example.miniredis.command.CommandRouter;
 import com.example.miniredis.protocol.ProtocolException;
 import com.example.miniredis.protocol.RespParser;
@@ -27,6 +27,8 @@ public final class ClientHandler implements Runnable {
             s.setTcpNoDelay(true);
             RespParser parser = new RespParser(s.getInputStream());
             RespWriter writer = new RespWriter(s.getOutputStream());
+            ClientSession session = new ClientSession();
+
 
             while (true) {
                 List<String> command;
@@ -43,8 +45,7 @@ public final class ClientHandler implements Runnable {
                 if (command.isEmpty()) {
                     continue;
                 }
-                boolean keepOpen = router.execute(command, writer);
-                writer.flush();
+                boolean keepOpen = router.execute(command, writer, session);                writer.flush();
                 if (!keepOpen) {
                     break;
                 }

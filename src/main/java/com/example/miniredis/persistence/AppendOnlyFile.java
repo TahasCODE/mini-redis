@@ -79,7 +79,22 @@ public final class AppendOnlyFile implements AutoCloseable {
         ByteArrayOutputStream record = new ByteArrayOutputStream();
         writeAscii(record, "#TS:" + atMillis + "\r\n");
         encodeCommand(record, command);
-        byte[] bytes = record.toByteArray();
+        write(record.toByteArray());
+    }
+
+
+    public synchronized void appendTransaction(long atMillis, List<List<String>> commands) throws IOException {
+        ByteArrayOutputStream record = new ByteArrayOutputStream();
+        writeAscii(record, "#TS:" + atMillis + "\r\n");
+        encodeCommand(record, List.of("MULTI"));
+        for (List<String> command : commands) {
+            encodeCommand(record, command);
+        }
+        encodeCommand(record, List.of("EXEC"));
+        write(record.toByteArray());
+    }
+
+    private void write(byte[] bytes) throws IOException {
         FileOutputStream stream = out;
         stream.write(bytes);                    // one call: the whole record or (after a crash) a cut-off record
         size += bytes.length;
@@ -128,7 +143,6 @@ public final class AppendOnlyFile implements AutoCloseable {
             throw e;
         }
 
-        // The swap. The old stream must be closed first (Windows refuses to replace an open file).
         out.close();
         try {
             Files.move(temp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);

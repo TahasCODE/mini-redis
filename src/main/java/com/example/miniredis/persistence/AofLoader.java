@@ -14,6 +14,7 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.List;
 
 
@@ -30,6 +31,7 @@ public final class AofLoader {
         long fileLength = Files.size(path);
         long lastGood = 0;          // the end of the last complete record
         long replayed = 0;
+        List<List<String>> transaction = null;   // the commands of a MULTI whose EXEC we have not seen yet
         RespWriter sink = new RespWriter(OutputStream.nullOutputStream());   // replies are not needed: throw them away
 
         store.setClock(System.currentTimeMillis());
@@ -54,6 +56,29 @@ public final class AofLoader {
                     store.setClock(parseTime(first, parser.position()));
                     continue;                       // a time stamp alone is not yet a complete record
                 }
+                if (first.equalsIgnoreCase("MULTI")) {
+                    if (transaction != null) {
+                        throw damaged(parser, path, "MULTI inside a transaction");
+                    }
+                    transaction = new ArrayList<>();    // collect, do not run yet
+                    continue;
+                }
+                if (first.equalsIgnoreCase("EXEC")) {
+                    if (transaction == null) {
+                        throw damaged(parser, path, "EXEC without MULTI");
+                    }
+                    for (List<String> queued : transaction) {   // the block is complete: run it
+                        router.execute(queued, sink);
+                        replayed++;
+                    }
+                    transaction = null;
+                    lastGood = parser.position();
+                    continue;
+                }
+                if (transaction != null) {
+                    transaction.add(command);           // part of a transaction: wait for its EXEC
+                    continue;
+                }
                 router.execute(command, sink);
                 replayed++;
                 lastGood = parser.position();       // this record is complete
@@ -63,13 +88,18 @@ public final class AofLoader {
         }
 
         if (lastGood < fileLength) {
-            System.out.println("append-only file: removing a half-written record at the end ("
+            System.out.println("append-only file: removing a half-written record or transaction at the end ("
                     + (fileLength - lastGood) + " bytes)");
             try (FileChannel channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
                 channel.truncate(lastGood);
             }
         }
         return replayed;
+    }
+
+    private static IOException damaged(RespParser parser, Path path, String why) {
+        return new IOException("the append-only file is damaged near byte " + parser.position() + " (" + why
+                + "). Repair or delete " + path + " and start again.");
     }
 
     private static long parseTime(String annotation, long position) throws IOException {

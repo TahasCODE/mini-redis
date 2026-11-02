@@ -44,6 +44,9 @@ public final class RespWriter {
         writeLine("*" + size);
     }
 
+    public void writeRaw(byte[] bytes) throws IOException {
+        out.write(bytes);
+    }
 
     public boolean errorWritten() {
         return errorWritten;
