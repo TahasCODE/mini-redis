@@ -146,7 +146,6 @@ public final class Store {
         };
     }
 
-    /** Deletes a key of any type. @return true if a live key was removed. */
     public boolean delete(String key) {
         long now = now();
         boolean[] wasLive = {false};
@@ -596,7 +595,6 @@ public final class Store {
         if (!e.isExpired(now)) {
             return e;
         }
-        // remove only if nobody replaced it in the meantime
         data.computeIfPresent(key, (k, current) -> current == e ? swap(k, current, null) : current);
         return null;
     }
