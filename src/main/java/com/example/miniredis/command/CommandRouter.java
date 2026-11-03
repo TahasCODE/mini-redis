@@ -340,7 +340,6 @@ public final class CommandRouter {
         out.integer(store.size());
     }
 
-    // FLUSHALL -> delete every key
     private void flushall(List<String> args, RespWriter out) throws IOException {
         store.clear();
         out.simpleString("OK");
