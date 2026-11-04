@@ -23,6 +23,10 @@ final class Connection {
     final RespWriter writer = new RespWriter(replies);
     private ByteBuffer sending;
 
+    java.nio.channels.SelectionKey key;
+    boolean scheduled;
+    boolean pausedForOutput;
+
     boolean closeAfterWrite;
 
     Connection(SocketChannel channel, String name) {
