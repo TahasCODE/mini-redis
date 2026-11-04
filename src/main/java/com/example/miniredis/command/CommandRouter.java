@@ -29,7 +29,7 @@ public final class CommandRouter {
     private static final Map<String, Integer> ARITY = Map.ofEntries(
             Map.entry("PING", -1), Map.entry("ECHO", 2), Map.entry("COMMAND", -1), Map.entry("GET", 2),
             Map.entry("DEL", -2), Map.entry("EXISTS", -2), Map.entry("DBSIZE", 1), Map.entry("FLUSHALL", -1),
-            Map.entry("TYPE", 2), Map.entry("BGREWRITEAOF", 1),
+            Map.entry("TYPE", 2), Map.entry("BGREWRITEAOF", 1), Map.entry("INFO", -1),
             Map.entry("SET", -3), Map.entry("SETEX", 4), Map.entry("PSETEX", 4),
             Map.entry("INCR", 2), Map.entry("DECR", 2), Map.entry("INCRBY", 3), Map.entry("DECRBY", 3),
             Map.entry("EXPIRE", 3), Map.entry("PEXPIRE", 3), Map.entry("TTL", 2), Map.entry("PTTL", 2),
@@ -42,6 +42,7 @@ public final class CommandRouter {
 
 
     private final ReentrantReadWriteLock transactionLock = new ReentrantReadWriteLock();
+
     private volatile AppendOnlyFile appendOnlyFile;
 
     public CommandRouter(Store store) {
@@ -56,6 +57,7 @@ public final class CommandRouter {
         handlers.put("FLUSHALL", this::flushall);
         handlers.put("TYPE", this::type);
         handlers.put("BGREWRITEAOF", this::rewriteAof);
+        handlers.put("INFO", this::info);
 
         new StringCommands(store).register(handlers);
         new CounterCommands(store).register(handlers);
@@ -226,6 +228,7 @@ public final class CommandRouter {
         }
     }
 
+
     private void runAndLog(CommandHandler handler, List<String> args, RespWriter out, AppendOnlyFile log)
             throws IOException {
         synchronized (log) {
@@ -272,6 +275,20 @@ public final class CommandRouter {
             }
         }
         out.simpleString("Background append only file rewriting started");
+    }
+
+    private void info(List<String> args, RespWriter out) throws IOException {
+        AppendOnlyFile log = appendOnlyFile;
+        StringBuilder text = new StringBuilder("# Persistence\r\n");
+        if (log == null) {
+            text.append("aof_enabled:0\r\n");
+        } else {
+            text.append("aof_enabled:1\r\n")
+                    .append("aof_fsync_policy:").append(log.policy().name().toLowerCase(Locale.ROOT)).append("\r\n")
+                    .append("aof_records:").append(log.records()).append("\r\n")
+                    .append("aof_fsyncs:").append(log.fsyncs()).append("\r\n");
+        }
+        out.bulkString(text.toString());
     }
 
     private void ping(List<String> args, RespWriter out) throws IOException {

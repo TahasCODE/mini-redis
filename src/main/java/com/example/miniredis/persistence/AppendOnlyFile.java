@@ -14,7 +14,6 @@ import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Locale;
 
-
 public final class AppendOnlyFile implements AutoCloseable {
 
     public enum FsyncPolicy {
@@ -42,6 +41,10 @@ public final class AppendOnlyFile implements AutoCloseable {
     private volatile FileOutputStream out;
     private volatile boolean dirty;          // written but not yet fsynced (EVERYSEC only)
     private volatile boolean closed;
+    private volatile boolean deferSync;      // group commit: ALWAYS records are fsynced later, by commit()
+    private boolean unsynced;                // written but not yet fsynced (ALWAYS + group commit); guarded by "this"
+    private long records;                    // how many records were written (for INFO); guarded by "this"
+    private long fsyncs;                     // how many fsyncs ALWAYS did (for INFO); guarded by "this"
     private long size;                       // bytes in the file; guarded by "this"
     private long baseSize;                   // size right after the last rewrite (or at start-up)
     private Thread syncer;
@@ -57,6 +60,8 @@ public final class AppendOnlyFile implements AutoCloseable {
 
 
     public static AppendOnlyFile open(Path path, FsyncPolicy policy, long autoRewriteMinBytes) throws IOException {
+        // A crash in the middle of a rewrite leaves this half-finished helper file behind. It was never renamed over
+        // the real file, so the real file is still complete: just throw the helper away.
         if (Files.deleteIfExists(tempPath(path))) {
             System.out.println("append-only file: removed an unfinished rewrite (" + tempPath(path).getFileName() + ")");
         }
@@ -75,13 +80,36 @@ public final class AppendOnlyFile implements AutoCloseable {
     }
 
 
+    public void setGroupCommit(boolean on) {
+        this.deferSync = on;
+    }
+
+
+    public synchronized boolean commit() throws IOException {
+        if (!unsynced) {
+            return false;
+        }
+        out.getFD().sync();
+        unsynced = false;
+        fsyncs++;
+        return true;
+    }
+
+    public synchronized long records() {
+        return records;
+    }
+
+    public synchronized long fsyncs() {
+        return fsyncs;
+    }
+
+
     public synchronized void append(long atMillis, List<String> command) throws IOException {
         ByteArrayOutputStream record = new ByteArrayOutputStream();
         writeAscii(record, "#TS:" + atMillis + "\r\n");
         encodeCommand(record, command);
         write(record.toByteArray());
     }
-
 
     public synchronized void appendTransaction(long atMillis, List<List<String>> commands) throws IOException {
         ByteArrayOutputStream record = new ByteArrayOutputStream();
@@ -98,8 +126,14 @@ public final class AppendOnlyFile implements AutoCloseable {
         FileOutputStream stream = out;
         stream.write(bytes);                    // one call: the whole record or (after a crash) a cut-off record
         size += bytes.length;
+        records++;
         if (policy == FsyncPolicy.ALWAYS) {
-            stream.getFD().sync();              // do not answer the client until the disk has it
+            if (deferSync) {
+                unsynced = true;                // commit() will do ONE fsync for all records of this round
+            } else {
+                stream.getFD().sync();          // do not answer the client until the disk has it
+                fsyncs++;
+            }
         } else {
             dirty = true;
         }
@@ -155,6 +189,7 @@ public final class AppendOnlyFile implements AutoCloseable {
         size = Files.size(path);
         baseSize = size;
         dirty = false;                                           // the new file was fsynced before the rename
+        unsynced = false;                                        // ... and it already contains every record
         return new RewriteResult(keys, commands, bytesBefore, size, (System.nanoTime() - started) / 1_000_000);
     }
 
@@ -165,7 +200,7 @@ public final class AppendOnlyFile implements AutoCloseable {
             syncer.interrupt();
         }
         try {
-            if (policy != FsyncPolicy.ALWAYS) {
+            if (policy != FsyncPolicy.ALWAYS || unsynced) {
                 out.getFD().sync();     // a clean shutdown loses nothing, whatever the policy
             }
         } finally {
@@ -173,7 +208,6 @@ public final class AppendOnlyFile implements AutoCloseable {
         }
     }
 
-    /** The EVERYSEC thread: once per second, force the data to disk if anything was written. */
     private void syncLoop() {
         while (!closed) {
             try {
