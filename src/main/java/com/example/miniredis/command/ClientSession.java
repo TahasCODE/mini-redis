@@ -6,6 +6,8 @@ import java.util.List;
 public final class ClientSession {
 
 
+    public boolean inTransaction() { return inMulti; }
+
     boolean inMulti;
 
     boolean dirty;

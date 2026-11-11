@@ -26,6 +26,9 @@ public final class RedisServer {
     private static final int OUTPUT_HIGH_WATER = 1024 * 1024;
     private static final int MAX_INPUT = 80 * 1024 * 1024;
 
+    private static final int PUBSUB_OUTPUT_LIMIT = 8 * 1024 * 1024;
+    private final PubSub pubsub = new PubSub();
+
     private final int port;
     private final Store store = new Store();
     private final CommandRouter router = new CommandRouter(store);
@@ -42,6 +45,13 @@ public final class RedisServer {
     public RedisServer(int port, Path aofPath, AppendOnlyFile.FsyncPolicy policy, long autoRewriteMinBytes)
             throws IOException {
         this.port = port;
+        router.enablePublisher((args, out) -> {
+            if (args.size() != 3) {
+                out.error("ERR wrong number of arguments for 'publish' command");
+            } else {
+                out.integer(pubsub.publish(args.get(1), args.get(2), this::enqueueMessage));
+            }
+        });
         if (aofPath != null) {
             long started = System.nanoTime();
             long replayed = AofLoader.load(aofPath, store, router);
@@ -166,11 +176,19 @@ public final class RedisServer {
             if (command.isEmpty()) {
                 continue;                                        // empty line, ignore
             }
+            if (handlePubSub(c, command)) {
+                if (c.closed) return;
+                continue;
+            }
             if (!router.execute(command, c.writer, c.session)) {
                 c.closeAfterWrite = true;                        // QUIT
             }
         }
-        if (!c.scheduled) {
+        schedule(c);
+    }
+
+    private void schedule(Connection c) {
+        if (!c.closed && !c.scheduled) {
             c.scheduled = true;
             toSend.add(c);                                       // its replies go out after the commit
         }
@@ -214,7 +232,61 @@ public final class RedisServer {
         }
     }
 
+    private boolean handlePubSub(Connection c, List<String> args) throws IOException {
+        String name = args.getFirst().toUpperCase(java.util.Locale.ROOT);
+        boolean subscribed = !c.subscriptions.isEmpty();
+        if (subscribed && !java.util.Set.of("SUBSCRIBE", "UNSUBSCRIBE", "PING", "QUIT").contains(name)) {
+            c.writer.error("ERR Can't execute '" + name.toLowerCase(java.util.Locale.ROOT)
+                    + "': only SUBSCRIBE, UNSUBSCRIBE, PING and QUIT are allowed in this context");
+        } else if ((name.equals("SUBSCRIBE") || name.equals("UNSUBSCRIBE")) && !c.session.inTransaction()) {
+            if (name.equals("SUBSCRIBE")) pubsub.subscribe(c, args);
+            else pubsub.unsubscribe(c, args);
+        } else if (subscribed && name.equals("PING")) {
+            if (args.size() > 2) c.writer.error("ERR wrong number of arguments for 'ping' command");
+            else {
+                c.writer.arrayHeader(2);
+                c.writer.bulkString("pong");
+                c.writer.bulkString(args.size() == 2 ? args.get(1) : "");
+            }
+        } else {
+            return false;
+        }
+        c.writer.flush();
+        if (c.pendingBytes() > PUBSUB_OUTPUT_LIMIT) close(c);
+        else schedule(c);
+        return true;
+    }
+
+    private boolean enqueueMessage(Connection c, String channel, String message) {
+        if (c.closed || c.closeAfterWrite || !c.key.isValid()) return false;
+        try {
+            c.writer.flush();
+            // Compute RESP size in bytes before allocating another pending message.
+            long a = channel.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            long b = message.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            long size = 4 + 13 + 5 + Long.toString(a).length() + a
+                    + 5 + Long.toString(b).length() + b;
+            if (c.pendingBytes() + size > PUBSUB_OUTPUT_LIMIT) {
+                close(c); // pausing reads cannot stop messages from other publishers
+                return false;
+            }
+            c.writer.arrayHeader(3);
+            c.writer.bulkString("message");
+            c.writer.bulkString(channel);
+            c.writer.bulkString(message);
+            c.writer.flush(); // pendingBytes must include the RespWriter buffer
+            schedule(c); // idle subscribers need output even without a new read event
+            return true;
+        } catch (IOException e) {
+            close(c);
+            return false;
+        }
+    }
+
     private void close(Connection c) {
+        if (c.closed) return;
+        c.closed = true;
+        pubsub.remove(c);
         c.key.cancel();
         try {
             c.channel.close();

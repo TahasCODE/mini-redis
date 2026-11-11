@@ -27,6 +27,8 @@ final class Connection {
     boolean scheduled;
     boolean pausedForOutput;
 
+    final java.util.Set<String> subscriptions = new java.util.LinkedHashSet<>();
+    boolean closed;
     boolean closeAfterWrite;
 
     Connection(SocketChannel channel, String name) {

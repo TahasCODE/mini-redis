@@ -27,7 +27,7 @@ public final class CommandRouter {
 
 
     private static final Map<String, Integer> ARITY = Map.ofEntries(
-            Map.entry("PING", -1), Map.entry("ECHO", 2), Map.entry("COMMAND", -1), Map.entry("GET", 2),
+            Map.entry("PUBLISH", 3), Map.entry("PING", -1), Map.entry("ECHO", 2), Map.entry("COMMAND", -1), Map.entry("GET", 2),
             Map.entry("DEL", -2), Map.entry("EXISTS", -2), Map.entry("DBSIZE", 1), Map.entry("FLUSHALL", -1),
             Map.entry("TYPE", 2), Map.entry("BGREWRITEAOF", 1), Map.entry("INFO", -1),
             Map.entry("SET", -3), Map.entry("SETEX", 4), Map.entry("PSETEX", 4),
@@ -65,6 +65,11 @@ public final class CommandRouter {
         new ListCommands(store).register(handlers);
         new HashCommands(store).register(handlers);
         new KeyCommands(store).register(handlers);
+    }
+
+    // Registered by the event loop, where all subscription state lives.
+    public void enablePublisher(CommandHandler publisher) {
+        handlers.put("PUBLISH", publisher);
     }
 
     public void enableAppendOnly(AppendOnlyFile file) {
