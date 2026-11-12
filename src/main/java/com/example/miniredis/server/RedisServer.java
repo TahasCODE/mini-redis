@@ -149,10 +149,7 @@ public final class RedisServer {
         processInput(c);                                         // commands may have been waiting in the buffer
     }
 
-    /**
-     * Runs every complete command in the client's input buffer. The replies only collect in the connection:
-     * they are sent by finishRound(), after the commit.
-     */
+
     private void processInput(Connection c) throws IOException {
         c.pausedForOutput = false;
         while (!c.closeAfterWrite) {
