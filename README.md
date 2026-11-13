@@ -21,4 +21,23 @@ Use `6380 appendonly.aof always 0` to enable AOF persistence with group fsync an
 
 The server uses a Java NIO selector, an expiry index and background sweeper, and an append-only log. In always mode, a round of commands shares a commit before replies are sent. Pub/Sub messages are transient. The tested compatibility scope is RESP2 and UTF-8 text. The Day 13 check covered the rate limiter.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    Client["redis-cli / Lettuce"] --> Nio["NIO selector and connection buffers"]
+    Nio --> Decode["RESP2 command decoder"]
+    Decode --> Router["Command router and transactions"]
+    Decode -->|SUBSCRIBE / UNSUBSCRIBE| PubSub["Channel subscriptions"]
+    Router -->|PUBLISH| PubSub
+    Router --> Store["In-memory store"]
+    Sweeper["Expiry sweeper"] --> Store
+    Router -->|Successful writes when enabled| AOF["Append-only file"]
+    Router --> Output["Queued replies and messages"]
+    PubSub --> Output
+    Output --> Flush["Finish round and flush sockets"]
+    AOF -->|Commit before flush| Flush
+    Flush --> Client
+```
+
 See [benchmark instructions and measured results](BENCHMARKS.md).
